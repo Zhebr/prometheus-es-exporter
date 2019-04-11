@@ -10,7 +10,8 @@ import time
 
 from collections import OrderedDict
 from elasticsearch import Elasticsearch
-from elasticsearch.exceptions import ConnectionTimeout, NotFoundError
+from elasticsearch.exceptions import (ConnectionTimeout,
+                                      ElasticsearchException, NotFoundError)
 from functools import partial
 from jog import JogFormatter
 from prometheus_client import start_http_server, Gauge
@@ -121,18 +122,26 @@ def zero_gauges(query_name):
                     gauge.set(0)
 
 
+def drop_gauges(query_name):
+    for metric_name in gauges.keys():
+        if metric_name.startswith(query_name):
+            del gauges[metric_name]
+
+
 def run_query(es_client, name, indices, query, timeout):
     try:
         response = es_client.search(index=indices, body=query, request_timeout=timeout)
 
         metrics = parse_response(response, [name])
-    except NotFoundError:
-        logging.exception('Not found indices [%s]. Zeroing metrics for query [%s].', indices, query)
-        zero_gauges(name)
-    except Exception:
-        logging.exception('Error while querying indices [%s], query [%s].', indices, query)
-    else:
-        update_gauges(metrics)
+    except ElasticsearchException as e:
+        if isinstance(e, NotFoundError):
+            logging.warn('Not found indices [%s]. Zeroing metrics for query [%s].', indices, name)
+            zero_gauges(name)
+        else:
+            logging.exception('Error while querying indices [%s], query [%s]. Dropping related metrics.', indices, query)
+            drop_gauges(name)
+        return
+    update_gauges(metrics)
 
 
 def collector_up_gauge(name_list, description, succeeded=True):
