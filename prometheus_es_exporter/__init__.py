@@ -10,7 +10,7 @@ import time
 
 from collections import OrderedDict
 from elasticsearch import Elasticsearch
-from elasticsearch.exceptions import ConnectionTimeout
+from elasticsearch.exceptions import ConnectionTimeout, NotFoundError
 from functools import partial
 from jog import JogFormatter
 from prometheus_client import start_http_server, Gauge
@@ -110,11 +110,25 @@ def gauge_generator(metrics):
         yield gauge
 
 
+def zero_gauges(query_name):
+    for metric_name, values in gauges.items():
+        if metric_name.startswith(query_name):
+            label_values, gauge = values
+            for labels in label_values:
+                if labels:
+                    gauge.labels(*labels).set(0)
+                else:
+                    gauge.set(0)
+
+
 def run_query(es_client, name, indices, query, timeout):
     try:
         response = es_client.search(index=indices, body=query, request_timeout=timeout)
 
         metrics = parse_response(response, [name])
+    except NotFoundError:
+        logging.exception('Not found indices [%s]. Zeroing metrics for query [%s].', indices, query)
+        zero_gauges(name)
     except Exception:
         logging.exception('Error while querying indices [%s], query [%s].', indices, query)
     else:
